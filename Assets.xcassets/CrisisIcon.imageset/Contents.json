@@ -1,0 +1,12 @@
+{
+  "images" : [
+    {
+      "filename" : "crisisicon.svg",
+      "idiom" : "universal"
+    }
+  ],
+  "info" : {
+    "author" : "xcode",
+    "version" : 1
+  }
+}
