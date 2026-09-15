@@ -21,8 +21,8 @@ func fetchLocation(lat: Double, lon: Double) async throws -> Location? {
     id: json[0]["geoid"].int ?? 0,
     name: json[0]["name"].stringValue,
     area: json[0]["region"].stringValue,
-    lat: json[0]["latitude"].doubleValue,
-    lon: json[0]["longitude"].doubleValue,
+    lat: lat,
+    lon: lon,
     timezone: json[0]["localtz"].stringValue,
     iso2: json[0]["iso2"].stringValue,
     country: json[0]["country"].stringValue
@@ -34,8 +34,7 @@ func fetchLocation(lat: Double, lon: Double) async throws -> Location? {
 func fetchForecast(location: Location) async throws -> [TimeStep]? {
   let timeseriesUrl = getSetting("weather.apiUrl") as! String
   let param = "epochtime,temperature,feelslike,smartsymbol,windcompass8,winddirection,windspeedms,dark"
-  var url = timeseriesUrl+"?param=\(param)&timesteps=30&format=json&who=\(WHO)"
-  url += location.id != 0 ? "&geoid=\(location.id)" : "&latlon=\(location.lat),\(location.lon)"
+  let url = timeseriesUrl+"?param=\(param)&timesteps=30&format=json&latlon=\(location.lat),\(location.lon)&who=\(WHO)"
   
   let dataTask = AF.request(url).serializingData()
   let value = try await dataTask.value
@@ -64,8 +63,7 @@ func fetchForecast(location: Location) async throws -> [TimeStep]? {
 func fetchUVForecast(location: Location) async throws -> [UVTimeStep]? {
   let timeseriesUrl = getSetting("weather.apiUrl") as! String
   let param = "epochtime,uvcumulated"
-  var url = timeseriesUrl+"?param=\(param)&producer=uv&timesteps=30&format=json&who=\(WHO)"
-  url += location.id != 0 ? "&geoid=\(location.id)" : "&latlon=\(location.lat),\(location.lon)"
+  let url = timeseriesUrl+"?param=\(param)&producer=uv&timesteps=30&format=json&latlon=\(location.lat),\(location.lon)&who=\(WHO)"
   
   let dataTask = AF.request(url).serializingData()
   let value = try await dataTask.value
