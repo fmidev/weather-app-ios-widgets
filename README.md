@@ -37,6 +37,16 @@ booted simulator, otherwise one with the newest installed iOS version. All
 selection logic and Xcode test settings live in this repository. Paths are
 resolved relative to the script, so it works from any working directory.
 
-On macOS, missing simulators or failed tests produce a nonzero exit code and
-block the push. On other platforms, the runner skips iOS tests successfully.
+On macOS, missing simulators or failed tests produce a nonzero exit code.
+On other platforms, the runner skips iOS tests successfully.
 The first run may take longer while Xcode downloads dependencies and builds the test target.
+
+### Install the pre-push hook
+
+Each developer must install the Widget hook once after cloning the project.
+From the main weather-app directory, run:
+
+```sh
+yarn install
+node ios/Widget/scripts/install-hooks.mjs
+```
