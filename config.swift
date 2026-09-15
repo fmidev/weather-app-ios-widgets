@@ -1,8 +1,8 @@
 import Foundation
 import SwiftyJSON
 
-func getSetting(_ setting: String) -> Any? {
-  guard let url = Bundle.main.url(forResource:"widgetConfig", withExtension: "json") else { return nil }
+func getSetting(_ setting: String, bundle: Bundle = .main) -> Any? {
+  guard let url = bundle.url(forResource:"widgetConfig", withExtension: "json") else { return nil }
   guard let contents = try? String(contentsOf: url) else { return nil }
   
   let json = JSON.init(parseJSON: contents)
@@ -10,8 +10,8 @@ func getSetting(_ setting: String) -> Any? {
   return json[path].rawValue
 }
 
-func getDefaultLocation() -> Location {
-  guard let url = Bundle.main.url(forResource:"widgetConfig", withExtension: "json")
+func getDefaultLocation(bundle: Bundle = .main) -> Location {
+  guard let url = bundle.url(forResource:"widgetConfig", withExtension: "json")
   else {
     return defaultLocation
   }

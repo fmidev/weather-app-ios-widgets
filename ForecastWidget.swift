@@ -2,11 +2,22 @@ import WidgetKit
 import CoreLocation
 import SwiftUI
 import Intents
-import AsyncLocationKit
+
+struct ForecastProviderDependencies {
+  var loadCurrentLocation: () async throws -> CLLocation? = { try await getCurrentLocation() }
+  var resolveLocation: (Double, Double) async throws -> Location? = { try await fetchLocation(lat: $0, lon: $1) }
+  var loadForecast: (Location) async throws -> [TimeStep]? = { try await fetchForecast(location: $0) }
+  var loadUVForecast: (Location) async throws -> [UVTimeStep]? = { try await fetchUVForecast(location: $0) }
+  var loadCrisisMessage: () async throws -> String? = { try await fetchCrisisMessage() }
+}
 
 struct ForecastProvider: IntentTimelineProvider {
   let USER_DEFAULTS_PREFIX = "forecast"
-  
+  var dependencies = ForecastProviderDependencies()
+  var userDefaults: UserDefaults = .standard
+  var bundle: Bundle = .main
+  var now: () -> Date = { Date() }
+
   func placeholder(in context: Context) -> TimeStepEntry {
     return defaultEntry
   }
@@ -17,169 +28,131 @@ struct ForecastProvider: IntentTimelineProvider {
 
   func getTimeline(for configuration: SettingsIntent, in context: Context, completion: @escaping (Timeline<Entry>) -> ()) {
     Task {
-      var error = nil as WidgetError?
-      var forecast = [] as [TimeStep]?
-      var uvForecast = [] as [UVTimeStep]?
-      var entries: [TimeStepEntry] = []
-      var location:Location?
-      var crisisMessage = nil as String?
-      let updateInterval = getSetting("weather.interval") as? Int ?? UPDATE_INTERVAL
-      let settings = convertSettingsIntentToWidgetSettings(configuration)
-      let oldEntries = getEntries(settings: configuration) // Previous timeline
-      
-      if (configuration.currentLocation == 0 && configuration.location != nil) {
-        // Use location from configuration
-        location = convertLocationSettingToLocation(configuration.location!)
-      } else {
-        let currentLocation = try await getCurrentLocation()
-        
-        if (currentLocation != nil) {
-          location = try await fetchLocation(
-            lat: currentLocation!.coordinate.latitude, lon: currentLocation!.coordinate.longitude
-          )
-        } else {
-          if (oldEntries != nil && oldEntries!.count > 0) {
-            location = oldEntries![0].location // Use previous location
-          } else {
-            error = .userLocationError
-          }
-        }
-      }
-      
-      if (getSetting("announcements.enabled") as? Bool == true) {
-        crisisMessage = try? await fetchCrisisMessage()
-      }
-      
-      if (error == nil) {
-        forecast = try? await fetchForecast(location: location!)
-        
-        if (forecast == nil) {
-          error = .dataLoadingError
-        } else {
-          uvForecast = try? await fetchUVForecast(location: location!)
-          
-          if (uvForecast != nil) {
-            forecast = mergeUvToForecast(forecast: forecast!, uvForecast: uvForecast!)
-          }
-        }
-      }
-      
-      let updated = Date()
-       
-      if (error != nil) {
-        let lastUpdated = getUpdated(settings: configuration)
-        
-        if (
-          lastUpdated != nil &&
-          lastUpdated!.addingTimeInterval(TimeInterval(FORECAST_VALIDITY_PERIOD)) > Date()
-        ) {
-          if (oldEntries != nil && oldEntries!.count > 0) {
-            let timeline = Timeline(
-              entries: oldEntries!,
-              policy: .after(Date() + TimeInterval(updateInterval * 60))
-            )
-            completion(timeline)
-            return
-          }
-        }
-        
-        entries.append(
-          TimeStepEntry(
-            date: Date(),
-            updated: updated,
-            location: defaultLocation,
-            timeSteps: [defaultTimeStep],
-            crisisMessage: crisisMessage,
-            error: error,
-            settings: settings
-          )
-        )
-      } else {
-        for (index, item) in forecast!.enumerated() {
-          let timeSteps = Array(0...5).map{
-            return forecast![index + $0]
-          }
-          
-          let date = Date(
-            timeIntervalSince1970: TimeInterval(item.epochtime)).addingTimeInterval(TimeInterval(-60*60)
-          )
-          entries.append(
-            TimeStepEntry(
-              date: date,
-              updated: updated,
-              location: location!,
-              timeSteps: timeSteps,
-              crisisMessage: crisisMessage,
-              error: nil,
-              settings: settings
-            )
-          )
-          
-          if (entries.count >= 24) {
-            let oldDataEntry = TimeStepEntry(
-              date: date.addingTimeInterval(TimeInterval(60*60)),
-              updated: updated,
-              location: location!,
-              timeSteps: timeSteps,
-              crisisMessage: crisisMessage,
-              error: WidgetError.oldDataError,
-              settings: settings
-            )
-            entries.append(oldDataEntry)
-            break
-          }
-        }
-        saveEntries(entries, settings: configuration)
-      }
-            
-      let timeline = Timeline(
-        entries: entries,
-        policy: .after(Date() + TimeInterval(updateInterval * 60))
-      )
-      completion(timeline)
+      completion(await makeTimeline(for: configuration))
     }
   }
-  
+
+  func makeTimeline(for configuration: SettingsIntent) async -> Timeline<TimeStepEntry> {
+    var error: WidgetError?
+    var forecast: [TimeStep]?
+    var location: Location?
+    var crisisMessage: String?
+    let updateInterval = getSetting("weather.interval", bundle: bundle) as? Int ?? UPDATE_INTERVAL
+    let settings = convertSettingsIntentToWidgetSettings(configuration, bundle: bundle)
+    let oldEntries = getEntries(settings: configuration)
+
+    if configuration.currentLocation == 0, let configuredLocation = configuration.location {
+      location = convertLocationSettingToLocation(configuredLocation)
+    } else if let currentLocation = try? await dependencies.loadCurrentLocation() {
+      location = try? await dependencies.resolveLocation(
+        currentLocation.coordinate.latitude, currentLocation.coordinate.longitude
+      )
+      if location == nil {
+        error = .dataLoadingError
+      }
+    } else if let previousLocation = oldEntries?.first?.location {
+      location = previousLocation
+    } else {
+      error = .userLocationError
+    }
+
+    if getSetting("announcements.enabled", bundle: bundle) as? Bool == true {
+      crisisMessage = try? await dependencies.loadCrisisMessage()
+    }
+
+    if let location, error == nil {
+      forecast = try? await dependencies.loadForecast(location)
+      // Every entry needs six timesteps for the forecast views.
+      if let loadedForecast = forecast, loadedForecast.count >= 6 {
+        if let uvForecast = try? await dependencies.loadUVForecast(location) {
+          forecast = mergeUvToForecast(forecast: loadedForecast, uvForecast: uvForecast)
+        }
+      } else {
+        error = .dataLoadingError
+      }
+    }
+
+    let updated = now()
+    let policy = TimelineReloadPolicy.after(updated.addingTimeInterval(TimeInterval(updateInterval * 60)))
+    if let error {
+      if let lastUpdated = getUpdated(settings: configuration),
+         lastUpdated.addingTimeInterval(TimeInterval(FORECAST_VALIDITY_PERIOD)) > updated,
+         let oldEntries, !oldEntries.isEmpty {
+        return Timeline(entries: oldEntries, policy: policy)
+      }
+
+      return Timeline(entries: [TimeStepEntry(
+        date: updated,
+        updated: updated,
+        location: defaultLocation,
+        timeSteps: [defaultTimeStep],
+        crisisMessage: crisisMessage,
+        error: error,
+        settings: settings
+      )], policy: policy)
+    }
+
+    var entries: [TimeStepEntry] = []
+    if let forecast, let location {
+      let entryCount = min(24, forecast.count - 5)
+      for index in 0..<entryCount {
+        let timeSteps = Array(forecast[index..<(index + 6)])
+        let date = Date(timeIntervalSince1970: TimeInterval(forecast[index].epochtime - 60 * 60))
+        entries.append(TimeStepEntry(
+          date: date,
+          updated: updated,
+          location: location,
+          timeSteps: timeSteps,
+          crisisMessage: crisisMessage,
+          error: nil,
+          settings: settings
+        ))
+      }
+
+      // Expire the last complete window, including when the server returned fewer than 30 steps.
+      if let lastEntry = entries.last {
+        entries.append(TimeStepEntry(
+          date: lastEntry.date.addingTimeInterval(60 * 60),
+          updated: updated,
+          location: location,
+          timeSteps: lastEntry.timeSteps,
+          crisisMessage: crisisMessage,
+          error: .oldDataError,
+          settings: settings
+        ))
+      }
+      saveEntries(entries, settings: configuration)
+    }
+    return Timeline(entries: entries, policy: policy)
+  }
+
   func getUserDefaultsKey(settings: SettingsIntent) -> String {
     let currentLocation = settings.currentLocation == 0 ? "false" : "true"
     let customLocation = settings.location == nil ? "nil" : settings.location!.displayString
-    
     return "\(USER_DEFAULTS_PREFIX)-\(settings.theme.rawValue)-\(currentLocation)-\(customLocation)"
   }
-  
+
   func saveEntries(_ entries: [TimeStepEntry], settings: SettingsIntent) {
-    if (entries.count == 0) {
-      return
-    }
-    
-    let userDefaults = UserDefaults.standard
+    guard !entries.isEmpty, let data = try? JSONEncoder().encode(entries) else { return }
     let key = getUserDefaultsKey(settings: settings)
-    
-    if let data = try? JSONEncoder().encode(entries) {
-      userDefaults.set(data, forKey: key+"-entries")
-    }
-    UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: key+"-updated")
+    userDefaults.set(data, forKey: key + "-entries")
+    userDefaults.set(now().timeIntervalSince1970, forKey: key + "-updated")
   }
 
   func getEntries(settings: SettingsIntent) -> [TimeStepEntry]? {
-    let userDefaults = UserDefaults.standard
     let key = getUserDefaultsKey(settings: settings)
-    
-    if let data = userDefaults.data(forKey: key+"-entries"),
-      let entries = try? JSONDecoder().decode([TimeStepEntry].self, from: data) {
+    if let data = userDefaults.data(forKey: key + "-entries"),
+       let entries = try? JSONDecoder().decode([TimeStepEntry].self, from: data) {
       return entries
     }
     return nil
   }
-  
-  func getUpdated(settings: SettingsIntent) -> Date? {
-    let userDefaults = UserDefaults.standard
-    let key = getUserDefaultsKey(settings: settings)
-    return Date(
-      timeIntervalSince1970: userDefaults.double(forKey: key+"-updated")
-    )
-  }
 
+  func getUpdated(settings: SettingsIntent) -> Date? {
+    let key = getUserDefaultsKey(settings: settings)
+    guard let timestamp = userDefaults.object(forKey: key + "-updated") as? Double else { return nil }
+    return Date(timeIntervalSince1970: timestamp)
+  }
 }
 
 struct ErrorView : View {

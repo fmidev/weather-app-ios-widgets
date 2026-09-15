@@ -1,11 +1,26 @@
 import WidgetKit
 import CoreLocation
 import SwiftUI
-import AsyncLocationKit
+
+struct WarningProviderDependencies {
+  var loadCurrentLocation: () async throws -> CLLocation? = { try await getCurrentLocation() }
+  var resolveLocation: (Double, Double) async throws -> Location? = { try await fetchLocation(lat: $0, lon: $1) }
+  var loadWarnings: (Location) async throws -> [WarningTimeStep]? = { try await fetchWarnings($0) }
+  var loadCrisisMessage: () async throws -> String? = { try await fetchCrisisMessage() }
+}
 
 struct WarningProvider: IntentTimelineProvider {
   let USER_DEFAULTS_PREFIX = "warnings-today"
-  
+  var dependencies = WarningProviderDependencies()
+  var userDefaults: UserDefaults = .standard
+  var bundle: Bundle = .main
+  var now: () -> Date = { Date() }
+  var calendar: Calendar = {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(identifier: "Europe/Helsinki")!
+    return calendar
+  }()
+
   func placeholder(in context: Context) -> WarningEntry {
     return defaultWarningEntry
   }
@@ -16,171 +31,134 @@ struct WarningProvider: IntentTimelineProvider {
     completion: @escaping (WarningEntry) -> ()) {
     completion(defaultWarningEntry)
   }
- 
+
   func getTimeline(
     for configuration: SettingsIntent,
     in context: Context,
     completion: @escaping (Timeline<Entry>) -> ()) {
     Task {
-      var error = nil as WidgetError?
-      var warnings = [] as [WarningTimeStep]?
-      var crisisMessage = nil as String?
-      var location:Location?
-      var entries: [WarningEntry] = []
-      let updateInterval = getSetting("warnings.interval") as? Int ?? UPDATE_INTERVAL
-      let settings = convertSettingsIntentToWidgetSettings(configuration)
-      let oldEntries = getEntries(settings: configuration) // Previous timeline
-      
-      if (configuration.currentLocation == 0 && configuration.location != nil) {
-        // Use location from configuration
-        location = convertLocationSettingToLocation(configuration.location!)
-      } else {
-        let currentLocation = try await getCurrentLocation()
-        
-        if (currentLocation != nil) {
-          location = try await fetchLocation(
-            lat: currentLocation!.coordinate.latitude, lon: currentLocation!.coordinate.longitude
-          )
-        } else {
-          if (oldEntries != nil && oldEntries!.count > 0) {
-            location = oldEntries![0].location // Use previous location
-          } else {
-            error = .userLocationError
-          }
-        }
-      }
-      
-      if (location?.iso2 != "FI") {
-        error = .locationOutsideDataArea
-      }
-      
-      if (getSetting("announcements.enabled") as? Bool == true) {
-        crisisMessage = try? await fetchCrisisMessage()
-      }
-      
-      if (error == nil) {
-        warnings = try await fetchWarnings(location!)
-        if (warnings == nil) {
-          error = .dataLoadingError
-        }
-      }
-           
-      if (error != nil) {
-        let lastUpdated = getUpdated(settings: configuration)
-        
-        if (
-          lastUpdated != nil &&
-          lastUpdated!.addingTimeInterval(TimeInterval(WARNING_VALIDITY_PERIOD)) > Date()
-        ) {
-          if (oldEntries != nil && oldEntries!.count > 0) {
-            let timeline = Timeline(
-              entries: oldEntries!,
-              policy: .after(Date() + TimeInterval(updateInterval * 60))
-            )
-            completion(timeline)
-            return
-          }
-        }
-        
-        let errorEntry = WarningEntry(
-          date: Date(),
-          updated: Date(),
-          location: defaultLocation,
-          warnings: [],
-          crisisMessage: nil,
-          error: error,
-          settings: settings
-        )
-        
-        let timeline = Timeline(
-          entries: [errorEntry],
-          policy: .after(Date() + TimeInterval(updateInterval * 60))
-        )
-        completion(timeline)
-        return
-      }
-                  
-      let updated = Date()
-      let dates = [Date(), Date().addingTimeInterval(24*60*60)]
-       
-      for date in dates {
-        var currentDayWarnings: [WarningTimeStep] = warnings!.filter { warning in
-          return warning.language == "fi" && warning
-            .isValidOnDay(date)
-        }
-        currentDayWarnings = filterUniqueWarnings(currentDayWarnings)
-        currentDayWarnings = sortWarnings(currentDayWarnings)
+      completion(await makeTimeline(for: configuration))
+    }
+  }
 
-        let entry = WarningEntry(
-          date: date.startOfDay()!,
+  func makeTimeline(for configuration: SettingsIntent) async -> Timeline<WarningEntry> {
+    var error: WidgetError?
+    var warnings: [WarningTimeStep]?
+    var crisisMessage: String?
+    var location: Location?
+    let updateInterval = getSetting("warnings.interval", bundle: bundle) as? Int ?? UPDATE_INTERVAL
+    let settings = convertSettingsIntentToWidgetSettings(configuration, bundle: bundle)
+    let oldEntries = getEntries(settings: configuration)
+
+    if configuration.currentLocation == 0, let configuredLocation = configuration.location {
+      location = convertLocationSettingToLocation(configuredLocation)
+    } else if let currentLocation = try? await dependencies.loadCurrentLocation() {
+      location = try? await dependencies.resolveLocation(
+        currentLocation.coordinate.latitude, currentLocation.coordinate.longitude
+      )
+      if location == nil {
+        error = .dataLoadingError
+      }
+    } else if let previousLocation = oldEntries?.first?.location {
+      location = previousLocation
+    } else {
+      error = .userLocationError
+    }
+
+    if let location, location.iso2 != "FI" {
+      error = .locationOutsideDataArea
+    }
+
+    if getSetting("announcements.enabled", bundle: bundle) as? Bool == true {
+      crisisMessage = try? await dependencies.loadCrisisMessage()
+    }
+
+    if let location, error == nil {
+      warnings = try? await dependencies.loadWarnings(location)
+      if warnings == nil {
+        error = .dataLoadingError
+      }
+    }
+
+    let updated = now()
+    let policy = TimelineReloadPolicy.after(updated.addingTimeInterval(TimeInterval(updateInterval * 60)))
+    if let error {
+      if let lastUpdated = getUpdated(settings: configuration),
+         lastUpdated.addingTimeInterval(TimeInterval(WARNING_VALIDITY_PERIOD)) > updated,
+         let oldEntries, !oldEntries.isEmpty {
+        return Timeline(entries: oldEntries, policy: policy)
+      }
+      return Timeline(entries: [WarningEntry(
+        date: updated,
+        updated: updated,
+        location: defaultLocation,
+        warnings: [],
+        crisisMessage: nil,
+        error: error,
+        settings: settings
+      )], policy: policy)
+    }
+
+    var entries: [WarningEntry] = []
+    if let warnings, let location {
+      // Finnish warnings and their displayed dates use Helsinki calendar days, including DST changes.
+      let today = calendar.startOfDay(for: updated)
+      let tomorrow = calendar.date(byAdding: .day, value: 1, to: today)!
+      let expiration = calendar.date(byAdding: .day, value: 2, to: today)!
+      for date in [today, tomorrow] {
+        let currentDayWarnings = warnings.filter { warning in
+          warning.language == "fi" && warning.isValidOnDay(date, calendar: calendar)
+        }
+        entries.append(WarningEntry(
+          date: date,
           updated: updated,
-          location: location!,
-          warnings: currentDayWarnings,
+          location: location,
+          warnings: sortWarnings(filterUniqueWarnings(currentDayWarnings)),
           crisisMessage: crisisMessage,
           error: nil,
           settings: settings
-        )
-        entries.append(entry)
+        ))
       }
-      
-      let expiredEntry = WarningEntry(
-        date: Date().addingTimeInterval(2*60*60).startOfDay()!,
+      entries.append(WarningEntry(
+        date: expiration,
         updated: updated,
-        location: location!,
+        location: location,
         warnings: [],
         crisisMessage: crisisMessage,
         error: .oldDataError,
         settings: settings
-      )
-      entries.append(expiredEntry)
+      ))
       saveEntries(entries, settings: configuration)
-      
-      let timeline = Timeline(
-        entries: entries,
-        policy: .after(Date() + TimeInterval(updateInterval * 60))
-      )
-      completion(timeline)
     }
+    return Timeline(entries: entries, policy: policy)
   }
-  
+
   func getUserDefaultsKey(settings: SettingsIntent) -> String {
     let currentLocation = settings.currentLocation == 0 ? "false" : "true"
     let customLocation = settings.location == nil ? "nil" : settings.location!.displayString
-    
     return "\(USER_DEFAULTS_PREFIX)-\(settings.theme.rawValue)-\(currentLocation)-\(customLocation)"
   }
-  
+
   func saveEntries(_ entries: [WarningEntry], settings: SettingsIntent) {
-    if (entries.count == 0) {
-      return
-    }
-    
-    let userDefaults = UserDefaults.standard
+    guard !entries.isEmpty, let data = try? JSONEncoder().encode(entries) else { return }
     let key = getUserDefaultsKey(settings: settings)
-    
-    if let data = try? JSONEncoder().encode(entries) {
-      userDefaults.set(data, forKey: key+"-entries")
-    }
-    UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: key+"-updated")
+    userDefaults.set(data, forKey: key + "-entries")
+    userDefaults.set(now().timeIntervalSince1970, forKey: key + "-updated")
   }
 
   func getEntries(settings: SettingsIntent) -> [WarningEntry]? {
-    let userDefaults = UserDefaults.standard
     let key = getUserDefaultsKey(settings: settings)
-    
-    if let data = userDefaults.data(forKey: key+"-entries"),
-      let entries = try? JSONDecoder().decode([WarningEntry].self, from: data) {
+    if let data = userDefaults.data(forKey: key + "-entries"),
+       let entries = try? JSONDecoder().decode([WarningEntry].self, from: data) {
       return entries
     }
     return nil
   }
-  
+
   func getUpdated(settings: SettingsIntent) -> Date? {
-    let userDefaults = UserDefaults.standard
     let key = getUserDefaultsKey(settings: settings)
-    return Date(
-      timeIntervalSince1970: userDefaults.double(forKey: key+"-updated")
-    )
+    guard let timestamp = userDefaults.object(forKey: key + "-updated") as? Double else { return nil }
+    return Date(timeIntervalSince1970: timestamp)
   }
 }
 

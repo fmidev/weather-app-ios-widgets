@@ -11,26 +11,23 @@ func mergeUvToForecast(forecast: [TimeStep], uvForecast: [UVTimeStep]) -> [TimeS
   }
 }
 
-func getMidSummerDay(_ year: Int) -> Int {
-  let calendar = Calendar.current
-  let dateComponents = DateComponents(year: year, month: 6, day: 19)
+func getMidSummerDay(_ year: Int, calendar: Calendar = .current) -> Int {
+  let dateComponents = DateComponents(year: year, month: 6, day: 20)
   
   if let date = calendar.date(from: dateComponents) {
     let weekday = calendar.component(.weekday, from: date)
-    let a = 19 - weekday + 6
-    return a == 19 ? a + 7 : a
+    // Midsummer Day is the Saturday between June 20 and June 26.
+    return 20 + (7 - weekday) % 7
   } else {
     return -1 // Failure
   }
 }
 
-func isMidSummer() -> Bool {
-  let currentDate = Date()
-  let calendar = Calendar.current
-  let year = calendar.component(.year, from: currentDate)
-  let month = calendar.component(.month, from: currentDate)
-  let day = calendar.component(.day, from: currentDate)
-  let midSummerDay = getMidSummerDay(year)
+func isMidSummer(date: Date = Date(), calendar: Calendar = .current) -> Bool {
+  let year = calendar.component(.year, from: date)
+  let month = calendar.component(.month, from: date)
+  let day = calendar.component(.day, from: date)
+  let midSummerDay = getMidSummerDay(year, calendar: calendar)
   
   if (month == 6 && (day == midSummerDay || day == midSummerDay - 1)) {
     return true
@@ -52,10 +49,8 @@ func getEaster(year: Int) -> (month: Int, day: Int) {
   return (month, day)
 }
 
-func isEaster() -> Bool {
-  let currentDate = Date()
-  let calendar = Calendar.current
-  let year = calendar.component(.year, from: currentDate)
+func isEaster(date: Date = Date(), calendar: Calendar = .current) -> Bool {
+  let year = calendar.component(.year, from: date)
 
   let easter = getEaster(year: year)
   let easterDateComponents = DateComponents(year: year, month: easter.month, day: easter.day)
@@ -64,7 +59,7 @@ func isEaster() -> Bool {
   let goodFriday = calendar.date(byAdding: .day, value: -2, to: easterDate)!
   let nextTuesday = calendar.date(byAdding: .day, value: 2, to: easterDate)!
    
-  return currentDate >= goodFriday && currentDate < nextTuesday
+  return date >= goodFriday && date < nextTuesday
 }
 
 func filterUniqueWarnings(_ warnings : [WarningTimeStep]) -> [WarningTimeStep] {
@@ -137,8 +132,8 @@ func convertLocationSettingToLocation(_ location: LocationSetting) -> Location {
   )
 }
 
-func convertSettingsIntentToWidgetSettings(_ intent: SettingsIntent) -> WidgetSettings {
-  let showLogo = getSetting("layout.logo.enabled") as? Bool ?? true
+func convertSettingsIntentToWidgetSettings(_ intent: SettingsIntent, bundle: Bundle = .main) -> WidgetSettings {
+  let showLogo = getSetting("layout.logo.enabled", bundle: bundle) as? Bool ?? true
   
   switch intent.theme.rawValue {
     case 2: return WidgetSettings(theme: "light", showLogo: showLogo)
@@ -185,12 +180,12 @@ func backroundGradient() -> LinearGradient {
 
 // containerBackground() method requires that options have same type. Therefore this utility
 // function creates single color background using LinearGradient.
-func singleColorWidgetBackground(_ settings: WidgetSettings) -> LinearGradient {
+func singleColorWidgetBackground(_ settings: WidgetSettings, bundle: Bundle = .main) -> LinearGradient {
   let uiStyle = resolveUserInterfaceStyle(settings: settings)
-  var color = Color("WidgetBackground")
+  var color = Color("WidgetBackground", bundle: bundle)
   
   if (uiStyle != nil) {
-    color = Color(UIColor(named: "WidgetBackground")!.resolvedColor(with: UITraitCollection(userInterfaceStyle: uiStyle!)))
+    color = Color(UIColor(named: "WidgetBackground", in: bundle, compatibleWith: nil)!.resolvedColor(with: UITraitCollection(userInterfaceStyle: uiStyle!)))
   }
   
   return LinearGradient(
