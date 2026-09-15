@@ -1,9 +1,12 @@
 import SwiftUI
+import WidgetKit
 
 struct LargeNextHoursForecast: View {
     var timeSteps: [TimeStep]
     var timezone: String
     var transparent = true
+    var rowBackground = Color("ForecastRowBackground")
+    @Environment(\.widgetRenderingMode) private var renderingMode
   
     let COLUMN_WIDTH: CGFloat = 38
     
@@ -22,7 +25,7 @@ struct LargeNextHoursForecast: View {
           }
         }
         .padding(8)
-        .background(Color("ForecastRowBackground").opacity(transparent ? 0 : 1))
+        .background { forecastRowBackground }
         
         HStack{
           Image(decorative: "symbol")
@@ -53,7 +56,15 @@ struct LargeNextHoursForecast: View {
           }
         }
         .padding(8)
-        .background(Color("ForecastRowBackground").opacity(transparent ? 0 : 1))
+        .background { forecastRowBackground }
+      }
+    }
+
+    @ViewBuilder
+    private var forecastRowBackground: some View {
+      // Opaque row backgrounds hide the text when iOS tints both the same color.
+      if renderingMode == .fullColor && !transparent {
+        rowBackground
       }
     }
 }

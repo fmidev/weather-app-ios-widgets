@@ -1,0 +1,6 @@
+#!/bin/sh
+. "$(dirname "$0")/_/husky.sh"
+
+if [ "$GITHUB_ACTIONS" != "true" ]; then
+  node scripts/test.mjs
+fi

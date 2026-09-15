@@ -2,18 +2,28 @@ import Alamofire
 import SwiftyJSON
 import Foundation
 
-func getLanguageCode() -> String {
-  let lang = Locale.current.language.languageCode?.identifier ?? "fi"
+func getLanguageCode(locale: Locale = .current) -> String {
+  let lang = locale.language.languageCode?.identifier ?? "fi"
   return SUPPORTED_LANGUAGES.contains(lang) ? lang : "fi"
 }
 
-func fetchLocation(lat: Double, lon: Double) async throws -> Location? {
-  let timeseriesUrl = getSetting("location.apiUrl") as! String
-  let lang = getLanguageCode()
+func loadNetworkData(_ url: String) async throws -> Data {
+  let dataTask = AF.request(url).serializingData()
+  return try await dataTask.value
+}
+
+func fetchLocation(
+  lat: Double,
+  lon: Double,
+  bundle: Bundle = .main,
+  locale: Locale = .current,
+  loadData: (String) async throws -> Data = loadNetworkData
+) async throws -> Location? {
+  let timeseriesUrl = getSetting("location.apiUrl", bundle: bundle) as! String
+  let lang = getLanguageCode(locale: locale)
   let param = "geoid,name,region,latitude,longitude,region,country,iso2,localtz"
   let url = timeseriesUrl+"?param=\(param)&latlon=\(lat),\(lon)&lang=\(lang)&format=json&who=\(WHO)"
-  let dataTask = AF.request(url).serializingData()
-  let value = try await dataTask.value
+  let value = try await loadData(url)
   
   guard let json = try? JSON(data: value) else { return nil }
     
@@ -31,13 +41,16 @@ func fetchLocation(lat: Double, lon: Double) async throws -> Location? {
   return location
 }
 
-func fetchForecast(location: Location) async throws -> [TimeStep]? {
-  let timeseriesUrl = getSetting("weather.apiUrl") as! String
+func fetchForecast(
+  location: Location,
+  bundle: Bundle = .main,
+  loadData: (String) async throws -> Data = loadNetworkData
+) async throws -> [TimeStep]? {
+  let timeseriesUrl = getSetting("weather.apiUrl", bundle: bundle) as! String
   let param = "epochtime,temperature,feelslike,smartsymbol,windcompass8,winddirection,windspeedms,dark"
   let url = timeseriesUrl+"?param=\(param)&timesteps=30&format=json&latlon=\(location.lat),\(location.lon)&who=\(WHO)"
   
-  let dataTask = AF.request(url).serializingData()
-  let value = try await dataTask.value
+  let value = try await loadData(url)
   
   guard let json = try? JSON(data: value) else { return nil }
   guard let arrayJSON = json.array else { return nil }
@@ -60,13 +73,16 @@ func fetchForecast(location: Location) async throws -> [TimeStep]? {
   return items  
 }
 
-func fetchUVForecast(location: Location) async throws -> [UVTimeStep]? {
-  let timeseriesUrl = getSetting("weather.apiUrl") as! String
+func fetchUVForecast(
+  location: Location,
+  bundle: Bundle = .main,
+  loadData: (String) async throws -> Data = loadNetworkData
+) async throws -> [UVTimeStep]? {
+  let timeseriesUrl = getSetting("weather.apiUrl", bundle: bundle) as! String
   let param = "epochtime,uvcumulated"
   let url = timeseriesUrl+"?param=\(param)&producer=uv&timesteps=30&format=json&latlon=\(location.lat),\(location.lon)&who=\(WHO)"
   
-  let dataTask = AF.request(url).serializingData()
-  let value = try await dataTask.value
+  let value = try await loadData(url)
   
   guard let json = try? JSON(data: value) else { return nil }
   guard let arrayJSON = json.array else { return nil }
@@ -82,14 +98,17 @@ func fetchUVForecast(location: Location) async throws -> [UVTimeStep]? {
   return items
 }
 
-func fetchWarnings(_ location: Location) async throws -> [WarningTimeStep]? {
+func fetchWarnings(
+  _ location: Location,
+  bundle: Bundle = .main,
+  loadData: (String) async throws -> Data = loadNetworkData
+) async throws -> [WarningTimeStep]? {
   let formatter = DateFormatter()
   formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSSZ"
   
-  guard let apiUrl = getSetting("warnings.apiUrl") as? String else { return nil }
+  guard let apiUrl = getSetting("warnings.apiUrl", bundle: bundle) as? String else { return nil }
   let url = apiUrl+"?latlon=\(location.lat),\(location.lon)&country=fi&who=\(WHO)"
-  let dataTask = AF.request(url).serializingData()
-  let value = try await dataTask.value
+  let value = try await loadData(url)
   
   guard let json = try? JSON(data: value) else { return nil }
   guard let warningsArray = json["data"]["warnings"].array else { return nil }
@@ -116,19 +135,22 @@ func fetchWarnings(_ location: Location) async throws -> [WarningTimeStep]? {
   return items
 }
 
-func fetchCrisisMessage() async throws -> String? {
+func fetchCrisisMessage(
+  bundle: Bundle = .main,
+  locale: Locale = .current,
+  loadData: (String) async throws -> Data = loadNetworkData
+) async throws -> String? {
   var language = FALLBACK_LANGUAGE
   
-  if (Locale.current.language.languageCode?.identifier != nil &&
-      SUPPORTED_LANGUAGES.contains(Locale.current.language.languageCode!.identifier)
+  if (locale.language.languageCode?.identifier != nil &&
+      SUPPORTED_LANGUAGES.contains(locale.language.languageCode!.identifier)
   ) {
-    language = Locale.current.language.languageCode!.identifier
+    language = locale.language.languageCode!.identifier
   }
    
-  guard let apiUrl = getSetting("announcements.api."+language) as? String else { return nil }
+  guard let apiUrl = getSetting("announcements.api."+language, bundle: bundle) as? String else { return nil }
   
-  let dataTask = AF.request(apiUrl).serializingData()
-  let value = try await dataTask.value
+  let value = try await loadData(apiUrl)
   
   guard let json = try? JSON(data: value) else { return nil }
   guard let announcementsArray = json.array else { return nil }

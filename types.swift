@@ -101,21 +101,22 @@ struct TimeStep: Hashable, Identifiable, Codable {
   }
   
   
-  func getFeelsLikeIcon() -> String {
-    let shouldUseFinnishHolidays = getSetting("location.default.country") as? String == "FI"
+  func getFeelsLikeIcon(
+    date: Date = Date(),
+    calendar: Calendar = .current,
+    bundle: Bundle = .main
+  ) -> String {
+    let shouldUseFinnishHolidays = getSetting("location.default.country", bundle: bundle) as? String == "FI"
 
     if (shouldUseFinnishHolidays) {
-      let currentDate = Date()
-      let calendar = Calendar.current
-      //let year = calendar.component(.year, from: currentDate)
-      let month = calendar.component(.month, from: currentDate)
-      let day = calendar.component(.day, from: currentDate)
+      let month = calendar.component(.month, from: date)
+      let day = calendar.component(.day, from: date)
       
       // holidays
-      if (isMidSummer()) {
+      if (isMidSummer(date: date, calendar: calendar)) {
         return "midsummer"
       }
-      if (isEaster()) {
+      if (isEaster(date: date, calendar: calendar)) {
         return "easter"
       }
       if (month == 12 && day == 6) {
@@ -347,17 +348,20 @@ struct WarningDuration: Codable {
   let endTime: Date?
   
   func formatDuration() -> String {
+    let timeZone = TimeZone(identifier: "Europe/Helsinki")!
+    var calendar = Calendar.current
+    calendar.timeZone = timeZone
     let shortDateFormatter = DateFormatter()
     shortDateFormatter.dateFormat = "HH:mm"
-    shortDateFormatter.timeZone = TimeZone(identifier: "Europe/Helsinki")
+    shortDateFormatter.timeZone = timeZone
     let longDateFormatter = DateFormatter()
     longDateFormatter.dateFormat = "dd.MM. HH:mm"
-    shortDateFormatter.timeZone = TimeZone(identifier: "Europe/Helsinki")
+    longDateFormatter.timeZone = timeZone
     
     guard let start = startTime else { return "" }
     guard let end = endTime else { return "" }
        
-    if Calendar.current.isDate(start, inSameDayAs: end) {
+    if calendar.isDate(start, inSameDayAs: end) {
       return shortDateFormatter.string(from: start)+" - "+shortDateFormatter.string(from: end)
     } else {
       return longDateFormatter.string(from: start)+" - "+longDateFormatter.string(from: end)
@@ -377,10 +381,12 @@ struct WarningTimeStep: Codable {
   let language: String
   var wind: WindWarningDetails? = nil
   
-  func isValidOnDay(_ date: Date) -> Bool {
+  func isValidOnDay(_ date: Date, calendar: Calendar = .current) -> Bool {
     guard let startTime = duration.startTime else { return false }
     guard let endTime = duration.endTime else { return false }
       
-    return date >= startTime.startOfDay()! && date <= endTime.endOfDay()!
+    let firstDay = calendar.startOfDay(for: startTime)
+    guard let followingDay = calendar.date(byAdding: .day, value: 1, to: calendar.startOfDay(for: endTime)) else { return false }
+    return date >= firstDay && date < followingDay
   }
 }
